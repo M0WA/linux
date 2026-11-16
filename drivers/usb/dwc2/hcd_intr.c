@@ -129,6 +129,16 @@ static void dwc2_sof_intr(struct dwc2_hsotg *hsotg)
 	while (qh_entry != &hsotg->periodic_sched_inactive) {
 		qh = list_entry(qh_entry, struct dwc2_qh, qh_list_entry);
 		qh_entry = qh_entry->next;
+
+		/*
+		 * Slot missed by more than a microframe: split QHs that can
+		 * skip it are moved to their next slot instead of being sent
+		 * late.
+		 */
+		if (dwc2_frame_num_gt(dwc2_frame_num_dec(hsotg->frame_number, 1),
+				      qh->next_active_frame))
+			dwc2_hcd_qh_resync_missed(hsotg, qh, hsotg->frame_number);
+
 		if (dwc2_frame_num_le(qh->next_active_frame,
 				      hsotg->frame_number)) {
 			dwc2_sch_vdbg(hsotg, "QH=%p ready fn=%04x, nxt=%04x\n",

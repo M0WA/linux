@@ -1894,6 +1894,58 @@ exit:
 	return missed;
 }
 
+/**
+ * dwc2_hcd_qh_resync_missed() - Move a periodic QH whose slot was missed to its next slot
+ *
+ * Called from the SOF interrupt handler for a periodic QH that became due more
+ * than one (micro)frame ago, which means the interrupt was serviced late.
+ * Sending the step now would put it at a position the hub's transaction
+ * translator does not expect, and several late steps of different endpoints
+ * end up back to back in one microframe.  Instead restart the transfer at the
+ * next period.  This is done for two kinds of QH only:
+ *
+ * - an interrupt IN QH, at either of its steps: a start-split or a
+ *   complete-split.  A pending complete-split is abandoned and the transfer
+ *   starts over with a start-split.
+ * - an isochronous OUT QH that is about to send the first start-split of a
+ *   packet (position ALL or BEGIN).  Once a packet is under way, its remaining
+ *   steps are not skipped.
+ *
+ * @hsotg:        The HCD state structure
+ * @qh:           QH of a periodic split transfer on the inactive list
+ * @frame_number: The current frame number.
+ *
+ * Return: 1 if the QH was rescheduled, 0 if it was left alone.
+ */
+int dwc2_hcd_qh_resync_missed(struct dwc2_hsotg *hsotg, struct dwc2_qh *qh,
+			      u16 frame_number)
+{
+	struct dwc2_qtd *qtd;
+
+	if (!qh->do_split || list_empty(&qh->qtd_list))
+		return 0;
+
+	qtd = list_first_entry(&qh->qtd_list, struct dwc2_qtd, qtd_list_entry);
+
+	if (qh->ep_type == USB_ENDPOINT_XFER_INT && qh->ep_is_in) {
+		/* Abandon the complete-split, start over with a start-split */
+		qtd->complete_split = 0;
+		dwc2_next_periodic_start(hsotg, qh, frame_number);
+		return 1;
+	}
+
+	/* Skip only before the first start-split of a packet, not mid-packet */
+	if (qh->ep_type == USB_ENDPOINT_XFER_ISOC && !qh->ep_is_in &&
+	    !qtd->complete_split &&
+	    (qtd->isoc_split_pos == DWC2_HCSPLT_XACTPOS_ALL ||
+	     qtd->isoc_split_pos == DWC2_HCSPLT_XACTPOS_BEGIN)) {
+		dwc2_next_periodic_start(hsotg, qh, frame_number);
+		return 1;
+	}
+
+	return 0;
+}
+
 /*
  * Deactivates a QH. For non-periodic QHs, removes the QH from the active
  * non-periodic schedule. The QH is added to the inactive non-periodic
